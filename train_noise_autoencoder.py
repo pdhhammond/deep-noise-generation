@@ -17,6 +17,30 @@ import DataLoaders.NoiseAutoencoder_DataLoader as dl
 img_size = 256
 loss = nn.MSELoss()
 
+# handle command line arguments
+parser = argparse.ArgumentParser(description='Noise-Autoencoder')
+parser.add_argument('data', help='name of data folder.')
+parser.add_argument('fname', help='name of output folder.')
+parser.add_argument('--epochs', '-e', default=1000, type=int, help=
+	'number of epochs to train (default: 1000)')
+parser.add_argument('--traincap', default=-1, type=int, help=
+	'caps the number of training scenes (default: -1 for all possible samples)')
+parser.add_argument('--valcap', default=-1, type=int, help=
+	'caps the number of validation scenes (default: -1 for all possible' +
+	' samples)')
+parser.add_argument('--trainsample', default=-1, type=int, help='caps the' +
+	' number of noise samples per training scene' +
+	' (default: -1 for all possible samples)')
+parser.add_argument('--valsample', default=-1, type=int, help='caps the' +
+	' number of noise samples per validation scene (default: -1 for all' +
+	' possible samples)')
+parser.add_argument('--gpu', '-gpu', default=0, type=int, help='which gpu to' +
+	' use (default: 0)')
+parser.add_argument('--workers', '-w', default=10, type=int, help='number of' +
+	' data loading workers (default: 10)')
+args = parser.parse_args()
+
+
 # helper methods for training
 def get_error(generated_data, real_data):
 	'''
@@ -76,6 +100,26 @@ def train_autoencoder(e_optim, d_optim, generated_data, real_data):
 
 # initialize image pre-processing pipeline
 def depth_noise_data(data_root, descriptor, samples):
+	'''
+	Creates a DepthNoiseDataset with a pre-processing pipeline built in.
+
+	Parameters
+	----------
+	data_root : str
+		The path to the dataset.
+	descriptior : list
+		A dataset descriptor that indicates the indexes of the depth frames to
+		sample from each folder. Should be organized:
+		[(folder_name, [index_1, ...]), ...]
+	samples : int
+		The number of samples taken from each folder. Used when determining
+		which proxy ground-truth images to load.
+
+	Returns
+	-------
+	dl : DepthNoiseDataset
+		The created DepthNoiseDataset with a built in pre-processing pipeline.
+	'''
 	compose = transforms.Compose([
 		dl.Rescale((img_size, img_size)),
 		dl.ToTensor(),
@@ -105,29 +149,169 @@ def noise(size, n_dims=100):
 	n = Variable(nn.functional.normalize(n, p=2, dim=1).cuda())
 	return n
 
+def train(encoder, decoder, data_loader, e_optim, d_optim):
+	'''
+	Performs a single training epoch.
 
-# handle command line arguments
-parser = argparse.ArgumentParser(description='Noise-Autoencoder')
-parser.add_argument('data', help='name of data folder.')
-parser.add_argument('fname', help='name of output folder.')
-parser.add_argument('--epochs', '-e', default=1000, type=int, help=
-	'number of epochs to train (default: 1000)')
-parser.add_argument('--traincap', default=-1, type=int, help=
-	'caps the number of training scenes (default: -1 for all possible samples)')
-parser.add_argument('--valcap', default=-1, type=int, help=
-	'caps the number of validation scenes (default: -1 for all possible' +
-	' samples)')
-parser.add_argument('--trainsample', default=-1, type=int, help='caps the' +
-	' number of noise samples per training scene' +
-	' (default: -1 for all possible samples)')
-parser.add_argument('--valsample', default=-1, type=int, help='caps the' +
-	' number of noise samples per validation scene (default: -1 for all' +
-	' possible samples)')
-parser.add_argument('--gpu', '-gpu', default=0, type=int, help='which gpu to' +
-	' use (default: 0)')
-parser.add_argument('--workers', '-w', default=10, type=int, help='number of' +
-	' data loading workers (default: 10)')
-args = parser.parse_args()
+	Parameters
+	----------
+	encoder : torch.nn.Module
+		The PyTorch encoder module.
+	decoder: torch.nn.Module
+		The PyTorch decoder module.
+	data_loader : DataLoaders.VariationalEncoderNet
+		The Dataset to use for training.
+	e_optim : torch.nn.optim
+		The optimizer for the encoder module.
+	d_optim : torch.nn.optim
+		The optimizer for the decoder module.
+
+	Returns
+	-------
+	error : float
+		The mean training error for the entire epoch.
+	'''
+	encoder.train() # switch to train mode
+	decoder.train()
+	errors = []
+
+	# iterate over each batch
+	for n_batch, batch in enumerate(data_loader):
+		# get training batch
+		image, depth = batch['image'], batch['depth']
+		dropout, depth_noise = batch['dropout'], batch['noise']
+		N = depth_noise.size(0)
+
+		real_data = Variable(torch.cat([dropout, depth_noise], 1).cuda())
+		real_labels = Variable(torch.cat([image, depth], 1).cuda())
+
+		# generate fake data
+		mu, sigma = encoder(real_data)
+		gen_data = decoder(mu, sigma, real_labels)
+
+		# perform the backpropagation step
+		g_error = train_autoencoder(e_optim, d_optim, gen_data, real_data)
+		errors += [g_error.data.cpu().numpy()]
+
+	return float(np.mean(errors))
+
+def validate(encoder, decoder, test_data_loader):
+	'''
+	Performs a single validation epoch.
+
+	Parameters
+	----------
+	encoder : torch.nn.Module
+		The PyTorch encoder module.
+	decoder: torch.nn.Module
+		The PyTorch decoder module.
+	test_data_loader : DataLoaders.VariationalEncoderNet
+		The Dataset to use for validation.
+
+	Returns
+	-------
+	error : float
+		The mean training error for the entire epoch.
+	'''
+	# test epoch
+	encoder.eval()
+	decoder.eval()
+	errors = []
+
+	# iterate over the entire validation set
+	for n_batch, batch in enumerate(test_data_loader):
+		# get training batch
+		image, depth = batch['image'], batch['depth']
+		dropout, depth_noise = batch['dropout'], batch['noise']
+		N = depth_noise.size(0)
+
+		real_data = Variable(torch.cat([dropout, depth_noise], 1).cuda())
+		real_labels = Variable(torch.cat([image, depth], 1).cuda())
+
+		# Test Autoencoder
+		mu, sigma = encoder(real_data)
+		gen_data = decoder(mu, sigma, real_labels)
+
+		g_error = get_error(gen_data, real_data)
+		errors += [g_error.data.cpu().numpy()]
+
+	return float(np.mean(errors))
+
+def get_visualizations(data_loader, batch_size=4):
+	'''
+	Precomputes variables for visualizations.
+
+	Parameters
+	----------
+	data_loader : DataLoaders.VariationalEncoderNet
+		The Dataset to use for training.
+	batch_size : int
+		The number of images to pre-compute.
+
+	Returns
+	-------
+	vis_labels : torch.autograd.Variable
+		The batch of ground-truth RGB-D images to use when generating
+		visualizations.
+	vis_dropout : numpy.ndarray
+		A pre-computed horizontal stack of ground-truth dropout images.
+	vis_depth_noise : numpy.ndarray
+		A pre-computed horizontal stack of ground-truth residual noise images.
+	'''
+	vis_batch = next(iter(data_loader))
+	dropout, depth_noise = vis_batch['dropout'][:4], vis_batch['noise'][:4]
+	vis_data = torch.cat([dropout, depth_noise], 1)
+	vis_data = Variable(vis_data.cuda())
+
+	image, depth = vis_batch['image'][:4], vis_batch['depth'][:4]
+	vis_labels = torch.cat([image, depth], 1)
+	vis_labels = Variable(vis_labels.cuda())
+
+	vis_dropout = np.squeeze(dropout.data.cpu().numpy())
+	vis_dropout = np.hstack(vis_dropout)
+
+	vis_depth_noise = np.squeeze(depth_noise.data.cpu().numpy())
+	vis_depth_noise = np.hstack(vis_depth_noise)
+
+	return vis_labels, vis_dropout, vis_depth_noise
+
+def visualize(decoder, vis_labels, vis_dropout, vis_depth_noise,
+				message="generated", delay=1):
+	'''
+	Displays a batch of generated noise compared with ground-truth.
+
+	Parameters
+	----------
+	decoder: torch.nn.Module
+		PyTorch decoder model.
+	vis_labels : torch.autograd.Variable
+		Batch of ground-truth RGB-D images to use to generate visualizations.
+	vis_dropout : numpy.ndarray
+		A pre-computed horizontal stack of ground-truth dropout images.
+	vis_depth_noise : numpy.ndarray
+		A pre-computed horizontal stack of ground-truth residual noise images.
+	message : str
+		Message to display on the CV2 window. Defaults to "generated".
+	delay : int
+		Number of milliseconds to display the window for. Defaults to 1,
+		which will display the window without interrupting training until this
+		function is called again.
+	'''
+	z = noise(vis_labels.shape[0])
+	vis_images = decoder.generate(z, vis_labels)
+	vis_images = vis_images.data.cpu().numpy()
+
+	gen_dropout = vis_images[:, 0]
+	gen_dropout[gen_dropout <= 0] = -1.
+	gen_dropout[gen_dropout > 0] = 1.
+	gen_dropout = np.hstack(gen_dropout)
+
+	gen_depth_noise = np.hstack(vis_images[:, 1])
+
+	vis_image = np.vstack([gen_dropout, gen_depth_noise, vis_dropout,
+		vis_depth_noise]) / 2. + .5
+	cv2.imshow(message, vis_image)
+	cv2.waitKey(delay)
 
 
 if __name__ == "__main__":
@@ -187,26 +371,11 @@ if __name__ == "__main__":
 	decoder.cuda()
 
 	# create optimizers for training
-	d_optimizer = optim.Adam(encoder.parameters(), lr=.0002, betas=(.5, .999))
-	g_optimizer = optim.Adam(decoder.parameters(), lr=.0002, betas=(.5, .999))
-
+	e_optim = optim.Adam(encoder.parameters(), lr=.0002, betas=(.5, .999))
+	d_optim = optim.Adam(decoder.parameters(), lr=.0002, betas=(.5, .999))
 
 	# prepare visualizations from validation set
-	test_batch = next(iter(data_loader))
-	dropout, depth_noise = test_batch['dropout'][:4], test_batch['noise'][:4]
-	test_data = torch.cat([dropout, depth_noise], 1)
-	test_data = Variable(test_data.cuda())
-
-	# pre-compute ground-truth visualizations
-	v_image, v_depth = test_batch['image'][:4], test_batch['depth'][:4]
-	test_labels = torch.cat([v_image, v_depth], 1)
-	test_labels = Variable(test_labels.cuda())
-
-	test_dropout = np.squeeze(dropout.data.cpu().numpy())
-	test_dropout = np.hstack(test_dropout)
-
-	test_depth_noise = np.squeeze(depth_noise.data.cpu().numpy())
-	test_depth_noise = np.hstack(test_depth_noise)
+	v_labels, v_dropout, v_depth_noise = get_visualizations(test_data_loader)
 
 
 	# start training
@@ -219,81 +388,22 @@ if __name__ == "__main__":
 			print("Hasn't improved in 50 epochs. Terminating early.")
 			break
 
-		encoder.train()
-		decoder.train()
-		# keep track of error over this specific epoch
-		errors = []
+		# training epoch
+		mean_error = train(encoder, decoder, data_loader, e_optim, d_optim)
+		train_error += [mean_error]
 
-		# iterate over each batch
-		for n_batch, batch in enumerate(data_loader):
-			# get training batch
-			image, depth = batch['image'], batch['depth']
-			dropout, depth_noise = batch['dropout'], batch['noise']
-			N = depth_noise.size(0)
-
-			real_data = Variable(torch.cat([dropout, depth_noise], 1).cuda())
-			real_labels = Variable(torch.cat([image, depth], 1).cuda())
-
-			# 1. train Autoencoder
-			# generate fake data
-			mu, sigma = encoder(real_data)
-			gen_data = decoder(mu, sigma, real_labels)
-
-			# perform the backpropagation step
-			g_error = train_autoencoder(d_optimizer, g_optimizer, gen_data,
-				real_data)
-			errors += [g_error.data.cpu().numpy()]
-
-			# display Progress every few batches
-			if n_batch % 10 == 0:
-				z = noise(4)
-				test_images = decoder.generate(z, test_labels)
-				test_images = test_images.data.cpu().numpy()
-
-				gen_dropout = test_images[:, 0]
-				gen_dropout[gen_dropout <= 0] = -1.
-				gen_dropout[gen_dropout > 0] = 1.
-				gen_dropout = np.hstack(gen_dropout)
-
-				gen_depth_noise = np.hstack(test_images[:, 1])
-
-				test_image = np.vstack([gen_dropout, gen_depth_noise,
-					test_dropout, test_depth_noise]) / 2. + .5
-				cv2.imshow("generated", test_image)
-				cv2.waitKey(1)
-
-		# save training error and display progress
-		train_error += [float(np.mean(errors))]
-		print("train epoch", "(" + str(epoch) + "/" + str(num_epochs) + ")",
+		print("\ntrain epoch", "(" + str(epoch) + "/" + str(num_epochs) + ")",
 			"g_error", train_error[-1])
 
-		# test epoch
-		encoder.eval()
-		decoder.eval()
-		errors = []
+		# validation epoch
+		mean_error = validate(encoder, decoder, test_data_loader)
+		test_error += [mean_error]
 
-		# iterate over the entire validation set
-		for n_batch, batch in enumerate(test_data_loader):
-			# get training batch
-			image, depth = batch['image'], batch['depth']
-			dropout, depth_noise = batch['dropout'], batch['noise']
-			N = depth_noise.size(0)
-
-			real_data = Variable(torch.cat([dropout, depth_noise], 1).cuda())
-			real_labels = Variable(torch.cat([image, depth], 1).cuda())
-
-			# Test Autoencoder
-			mu, sigma = encoder(real_data)
-			gen_data = decoder(mu, sigma, real_labels)
-
-			g_error = get_error(gen_data, real_data)
-			errors += [g_error.data.cpu().numpy()]
-
-		# record mean validation error for this epoch
-		test_error += [float(np.mean(errors))]
 		print("test epoch", "(" + str(epoch) + "/" + str(num_epochs) + ")",
 			"g_error", test_error[-1])
-		print(out_path)
+
+		# visualize model progress
+		visualize(decoder, v_labels, v_dropout, v_depth_noise)
 
 		# save weights if best error is improved
 		if test_error[-1] < best_error:
@@ -312,6 +422,3 @@ if __name__ == "__main__":
 					'train_record':train_error,
 					'test_record':test_error}
 			json.dump(data, f)
-
-		# print spacer
-		print()
