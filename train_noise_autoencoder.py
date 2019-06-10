@@ -23,6 +23,9 @@ parser.add_argument('data', help='name of data folder.')
 parser.add_argument('fname', help='name of output folder.')
 parser.add_argument('--epochs', '-e', default=1000, type=int, help=
 	'number of epochs to train (default: 1000)')
+parser.add_argument('--earlystop', '-es', default=-1, type=int, help=
+	'if > 0, stops training early if no improvement in that many epochs.' +
+	' (default: -1)')
 parser.add_argument('--traincap', default=-1, type=int, help=
 	'caps the number of training scenes (default: -1 for all possible samples)')
 parser.add_argument('--valcap', default=-1, type=int, help=
@@ -334,6 +337,7 @@ if __name__ == "__main__":
 
 	# total number of epochs to train
 	num_epochs = args.epochs
+	early_stop = args.earlystop
 
 	# number of training pairs per batch
 	batch_size = 20
@@ -384,9 +388,11 @@ if __name__ == "__main__":
 	# train for the specified number of epochs
 	for epoch in range(num_epochs):
 		# early terminating condition
-		if len(test_error) > 50 and best_error not in test_error[-50:]:
-			print("Hasn't improved in 50 epochs. Terminating early.")
-			break
+		if early_stop > 0 and len(test_error) > early_stop:
+			if best_error not in test_error[-early_stop:]:
+				print("Hasn't improved in %d epochs. Terminating early."
+					% early_stop)
+				break
 
 		# training epoch
 		mean_error = train(encoder, decoder, data_loader, e_optim, d_optim)
