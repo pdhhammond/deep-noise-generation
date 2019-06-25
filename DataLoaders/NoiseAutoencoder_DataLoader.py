@@ -1,3 +1,7 @@
+"""
+Data loader for depth noise dataset to train noise autoencoder.
+"""
+
 import os
 import cv2
 import random
@@ -15,7 +19,8 @@ warnings.filterwarnings("ignore")
 
 folder_seed = 1000
 
-def partition_dataset(root_path, train_cap, val_cap, t_sample_cap, v_sample_cap):
+def partition_dataset(root_path, train_cap, val_cap, t_sample_cap,
+						v_sample_cap):
 	folders = next(os.walk(root_path))[1]
 	folders.sort()
 	t_descriptor, v_descriptor = [], []
@@ -49,7 +54,6 @@ def build_descriptor(root_path):
 		num_samples = len(next(os.walk(noise_path))[2])
 
 		scene_descriptor = [(folder, j) for j in range(0, num_samples)]
-		# scene_descriptor = {"name": folder, "samples": num_samples}
 		descriptor += [scene_descriptor]
 	return descriptor
 
@@ -57,17 +61,12 @@ class DepthNoiseDataset(Dataset):
 	"""Depth Noise dataset."""
 
 	def __init__(self, root_dir, descriptor, sample_cap, transform=None):
-		"""
-		Args:
-			root_dir (string): Directory with all the scenes.
-			transform (callable, optional): Optional transform to be applied
-				on a sample.
-		"""
 		self.root_dir = root_dir
 		self.transform = transform
 		self.sample_cap = sample_cap
 
-		self.descriptor = descriptor# if descriptor is not None else build_descriptor(root_dir)
+		# if descriptor is not None else build_descriptor(root_dir)
+		self.descriptor = descriptor
 
 	def __len__(self):
 		return len(self.descriptor)
@@ -89,12 +88,12 @@ class DepthNoiseDataset(Dataset):
 		# get scene directory name
 		scene_dir = os.path.join(self.root_dir, folder)
 
-		rgb_name = os.path.join(scene_dir, "med_image_%03d.png") % self.sample_cap
-		d_name = os.path.join(scene_dir, "med_depth_%03d.png") % self.sample_cap
-		raw_name = os.path.join(scene_dir, "depths", "depth_%04d.npy") % sample_idx
-
-		# noise_name = os.path.join(scene_dir, "noise", "noise_%04d.png") % sample_idx
-		# dropout_name = os.path.join(scene_dir, "dropout", "dropout_%04d.png") % sample_idx
+		rgb_name = os.path.join(scene_dir, "med_image_%03d.png")
+		rgb_name = rgb_name % self.sample_cap
+		d_name = os.path.join(scene_dir, "med_depth_%03d.png")
+		rgb_name = d_name % self.sample_cap
+		raw_name = os.path.join(scene_dir, "depths", "depth_%04d.npy")
+		raw_name = raw_name % sample_idx
 
 		raw_depth = np.clip(np.load(raw_name) / 10000., 0., 1.).astype(np.float64)
 		med_depth = cv2.imread(d_name, 0).astype(np.float64) / 255.
@@ -107,13 +106,10 @@ class DepthNoiseDataset(Dataset):
 		noise[dropout == 0] = 0
 		noise = ((noise + 1.) / 2. * 255.).astype(np.uint8)
 
-		# cv2.imshow("nut butter", np.hstack([dropout, noise]))
-		# cv2.waitKey(1)
-
 		# LOADING IMAGES IN BLACK AND WHITE
-		sample = {"image": cv2.imread(rgb_name, 0), "depth": cv2.imread(d_name, 0),
+		sample = {"image": cv2.imread(rgb_name, 0),
+					"depth": cv2.imread(d_name, 0),
 					"dropout": dropout, "noise": noise}
-					# "dropout": cv2.imread(dropout_name, 0), "noise": cv2.imread(noise_name, 0)}
 
 		if self.transform:
 			sample = self.transform(sample)

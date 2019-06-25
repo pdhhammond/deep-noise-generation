@@ -1,3 +1,44 @@
+"""
+Trains a noise-generating variational autoencoder. Saves the learned weights
+and training record to ./autoencoder_results/fname
+
+Usage
+-----
+usage: train_noise_autoencoder.py [-h] [--epochs EPOCHS]
+                                  [--earlystop EARLYSTOP]
+                                  [--traincap TRAINCAP] [--valcap VALCAP]
+                                  [--trainsample TRAINSAMPLE]
+                                  [--valsample VALSAMPLE] [--gpu GPU]
+                                  [--workers WORKERS]
+                                  data fname
+
+Input
+-----
+EPOCHS : int
+	number of epochs to train (default: 1000)
+EARLYSTOP : int
+	if > 0, stops training early if no improvement in that many epochs.
+	(default: -1)
+TRAINCAP : int
+	Caps the number of training scenes (default: -1 for all possible samples)
+VALCAP : int
+	Caps the number of validation scenes (default: -1 for all possible samples)
+TRAINSAMPLE : int
+	Caps the number of noise samples per training scene (default: -1 for all
+	possible samples)
+VALSAMPLE : int
+	caps the number of noise samples per validation scene (default: -1 for all
+	possible samples)
+GPU : int
+	GPU id to use (default: 0)
+WORKERS : int
+	number of data loading workers (default: 10)
+data : str
+	Path to the folder containing all of the depth scenes.
+fname : str
+	Name of output folder.
+"""
+
 import numpy as np
 import cv2
 import os
@@ -9,9 +50,9 @@ from torch import nn, optim
 from torch.autograd.variable import Variable
 from torchvision import transforms
 
-from Architectures.VAE import VariationalEncoderNet, VariationalDecoderNet
+from architectures.VAE import VariationalEncoderNet, VariationalDecoderNet
 
-import DataLoaders.NoiseAutoencoder_DataLoader as dl
+import dataloaders.NoiseAutoencoder_DataLoader as dl
 
 # height and width of images after normalization
 img_size = 256

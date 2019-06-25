@@ -5,8 +5,6 @@ import numpy as np
 
 from torch.autograd import Variable
 
-# pipeline helpers
-
 def load_by_index(path, indices, color_mode=0):
 	if not os.path.isdir(path):
 		return None
@@ -28,7 +26,6 @@ def load_by_index(path, indices, color_mode=0):
 
 
 def load_image_stack(path, color_mode=0):
-	print(path)
 	if not os.path.isdir(path):
 		return None
 
